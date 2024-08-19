@@ -1,48 +1,66 @@
-import sys
+import os
 
 
-def read_extxyz(filename):
-    with open(filename, 'r') as file:
-        lines = file.readlines()
+def parse_extxyz(file_content):
+    frames = []
+    lines = file_content.strip().splitlines()
+    i = 0
+    while i < len(lines):
+        # Read the number of atoms
+        num_atoms = int(lines[i].strip())
+        i += 1
 
-    atom_count = int(lines[0].strip())
-    atoms = []
+        # Read the frame"s metadata (assuming it"s a one-liner)
+        metadata = lines[i].strip()
+        i += 1
 
-    for line in lines[2:2 + atom_count]:
-        parts = line.split()
-        atom_type = parts[0]
-        x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-        atoms.append((atom_type, x, y, z))
+        atoms = []
+        for _ in range(num_atoms):
+            atom_line = lines[i].strip().split()
+            atoms.append({
+                "element": atom_line[0],
+                "x": float(atom_line[1]),
+                "y": float(atom_line[2]),
+                "z": float(atom_line[3])
+            })
+            i += 1
 
-    return atoms
+        frames.append({"metadata": metadata, "atoms": atoms})
 
-
-def write_mol2(atoms, output_filename):
-    with open(output_filename, 'w') as file:
-        file.write("@<TRIPOS>MOLECULE\n")
-        file.write("Converted Molecule\n")
-        file.write(f"{len(atoms)} 0 0 0 0\n")
-        file.write("SMALL\n")
-        file.write("USER_CHARGES\n\n")
-
-        file.write("@<TRIPOS>ATOM\n")
-        for i, (atom_type, x, y, z) in enumerate(atoms, start=1):
-            file.write(f"{i} {atom_type} {x:.4f} {y:.4f} {z:.4f} {atom_type} 1 <0> 0.0000\n")
-
-        file.write("\n@<TRIPOS>BOND\n")
-        # Bonds are not handled in this basic example
-        file.write("\n")
+    return frames
 
 
-def convert_extxyz_to_mol2(extxyz_file, mol2_file):
-    atoms = read_extxyz(extxyz_file)
-    write_mol2(atoms, mol2_file)
+def write_mol2(frames, output_file):
+    with open(output_file, "w") as f:
+        for frame_idx, frame in enumerate(frames):
+            # Write molecule header
+            f.write(f"@<TRIPOS>MOLECULE\n")
+            f.write(f"Frame_{frame_idx + 1}\n")
+            f.write(f"{len(frame["atoms"])} 0 0 0 0\n")
+            f.write(f"SMALL\n")
+            f.write(f"NO_CHARGES\n\n")
+
+            # Write atom section
+            f.write(f"@<TRIPOS>ATOM\n")
+            for atom_idx, atom in enumerate(frame["atoms"]):
+                f.write(
+                    f"{atom_idx + 1} {atom["element"]}{atom_idx + 1} {atom["x"]:.4f} {atom["y"]:.4f} {atom["z"]:.4f} {atom["element"]} 1 LIG1 0.000\n")
+
+            # Write bond section (empty as extxyz does not provide bond information)
+            f.write(f"@<TRIPOS>BOND\n")
+
+            f.write("\n")
 
 
-if __name__ == "__main__":
-    # extxyz_file = "input.extxyz"  # Input file path
-    extxyz_file = "train_mixedT10frames.xyz"
-    mol2_file = "output.mol2"  # Output file path
+def convert_extxyz_to_mol2(input_file, output_file):
+    with open(input_file, "r") as f:
+        file_content = f.read()
 
-    convert_extxyz_to_mol2(extxyz_file, mol2_file)
-    print(f"Conversion completed: {mol2_file}")
+    frames = parse_extxyz(file_content)
+    write_mol2(frames, output_file)
+
+
+# Example usage
+input_file = "input.extxyz"  # Replace with your extxyz file path
+output_file = "output.mol2"  # Output MOL2 file path
+convert_extxyz_to_mol2(input_file, output_file)
