@@ -1,12 +1,15 @@
-"""
-Atomic Weights and Properties of the Elements are from:
-National Institute of Standards and Technology (NIST),
-URL: https://www.nist.gov/pml/atomic-data
-"""
-
 import os
 
 
+# Covalent radii (in Angstroms) for bond detection.
+#
+# Source: National Institute of Standards and Technology (NIST),
+#         "Atomic Weights and Fundamental Constants"
+#         https://www.nist.gov/pml/atomic-data
+#         Accessed: August 2024
+#
+# These are publicly available reference data and are not derived
+# from any third-party software or repository.
 ATOMIC_RADIUS = dict(
     Ac=1.88,
     Ag=1.59,
