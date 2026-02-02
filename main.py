@@ -1,4 +1,15 @@
-import os
+"""Convert extXYZ molecular structure files to MOL2 (Tripos Sybyl) format.
+
+Supports multi-frame extXYZ files, automatic bond detection based on
+covalent radii, and basic SYBYL atom type assignment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+from typing import TextIO
 
 
 # Covalent radii (in Angstroms) for bond detection.
@@ -10,7 +21,7 @@ import os
 #
 # These are publicly available reference data and are not derived
 # from any third-party software or repository.
-ATOMIC_RADIUS = dict(
+ATOMIC_RADIUS: dict[str, float] = dict(
     Ac=1.88,
     Ag=1.59,
     Al=1.35,
@@ -101,67 +112,274 @@ ATOMIC_RADIUS = dict(
     Zr=1.56,
 )
 
+# Default tolerance factor for bond detection.
+# A bond is detected when:  dist(A, B) < (r_cov_A + r_cov_B) * BOND_TOLERANCE
+BOND_TOLERANCE: float = 1.2
 
-def parse_extxyz(file_content):
-    frames = []
+# Basic SYBYL atom type mapping.
+# Maps (element, number_of_bonds) -> SYBYL type.
+# Falls back to element name if no specific mapping exists.
+SYBYL_TYPES: dict[tuple[str, int], str] = {
+    ("C", 4): "C.3",
+    ("C", 3): "C.2",
+    ("C", 2): "C.1",
+    ("C", 1): "C.1",
+    ("N", 3): "N.3",
+    ("N", 2): "N.2",
+    ("N", 1): "N.1",
+    ("O", 2): "O.3",
+    ("O", 1): "O.2",
+    ("S", 2): "S.3",
+    ("S", 1): "S.2",
+    ("P", 4): "P.3",
+    ("P", 3): "P.3",
+    ("H", 1): "H",
+    ("H", 0): "H",
+    ("D", 1): "H",
+    ("D", 0): "H",
+    ("F", 1): "F",
+    ("F", 0): "F",
+    ("Cl", 1): "Cl",
+    ("Cl", 0): "Cl",
+    ("Br", 1): "Br",
+    ("Br", 0): "Br",
+    ("I", 1): "I",
+    ("I", 0): "I",
+}
+
+
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
+
+Atom = dict[str, object]      # {"element": str, "x": float, "y": float, "z": float}
+Bond = tuple[int, int]        # (atom_index_0, atom_index_1), 0-based
+Frame = dict[str, object]     # {"metadata": str, "atoms": list[Atom], "bonds": list[Bond]}
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+def parse_extxyz(file_content: str) -> list[Frame]:
+    """Parse an extXYZ string into a list of frames.
+
+    Each frame contains atom coordinates and optional metadata.
+    The extXYZ format per frame is:
+        <num_atoms>
+        <metadata line>
+        <element> <x> <y> <z>  (repeated num_atoms times)
+    """
+    frames: list[Frame] = []
     lines = file_content.strip().splitlines()
+    total_lines = len(lines)
     i = 0
-    while i < len(lines):
-        # Read the number of atoms
-        num_atoms = int(lines[i].strip())
+
+    while i < total_lines:
+        # --- atom count ---
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        try:
+            num_atoms = int(line)
+        except ValueError:
+            raise ValueError(
+                f"Line {i + 1}: expected atom count (integer), got: {line!r}"
+            )
+        if num_atoms <= 0:
+            raise ValueError(
+                f"Line {i + 1}: atom count must be positive, got {num_atoms}"
+            )
         i += 1
 
-        # Read the frame"s metadata (assuming it"s a one-liner)
+        # --- metadata ---
+        if i >= total_lines:
+            raise ValueError(
+                f"Line {i + 1}: unexpected end of file (expected metadata line)"
+            )
         metadata = lines[i].strip()
         i += 1
 
-        atoms = []
-        for _ in range(num_atoms):
-            atom_line = lines[i].strip().split()
-            atoms.append({
-                "element": atom_line[0],
-                "x": float(atom_line[1]),
-                "y": float(atom_line[2]),
-                "z": float(atom_line[3])
-            })
+        # --- atoms ---
+        atoms: list[Atom] = []
+        for atom_no in range(num_atoms):
+            if i >= total_lines:
+                raise ValueError(
+                    f"Line {i + 1}: unexpected end of file "
+                    f"(expected atom {atom_no + 1}/{num_atoms})"
+                )
+            parts = lines[i].strip().split()
+            if len(parts) < 4:
+                raise ValueError(
+                    f"Line {i + 1}: expected 'element x y z', got: {lines[i]!r}"
+                )
+            element = parts[0]
+            try:
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+            except ValueError:
+                raise ValueError(
+                    f"Line {i + 1}: cannot parse coordinates: {lines[i]!r}"
+                )
+            atoms.append({"element": element, "x": x, "y": y, "z": z})
             i += 1
 
-        frames.append({"metadata": metadata, "atoms": atoms})
+        frames.append({"metadata": metadata, "atoms": atoms, "bonds": []})
 
     return frames
 
 
-def write_mol2(frames, output_file):
-    with open(output_file, "w") as f:
-        for frame_idx, frame in enumerate(frames):
-            # Write molecule header
-            f.write(f"@<TRIPOS>MOLECULE\n")
-            f.write(f"Frame_{frame_idx + 1}\n")
-            f.write(f"{len(frame["atoms"])} 0 0 0 0\n")
-            f.write(f"SMALL\n")
-            f.write(f"NO_CHARGES\n\n")
+# ---------------------------------------------------------------------------
+# Bond detection
+# ---------------------------------------------------------------------------
 
-            # Write atom section
-            f.write(f"@<TRIPOS>ATOM\n")
-            for atom_idx, atom in enumerate(frame["atoms"]):
-                f.write(
-                    f"{atom_idx + 1} {atom["element"]}{atom_idx + 1} {atom["x"]:.4f} {atom["y"]:.4f} {atom["z"]:.4f} {atom["element"]} 1 LIG1 0.000\n")
-
-            # Write bond section (empty as extxyz does not provide bond information)
-            f.write(f"@<TRIPOS>BOND\n")
-
-            f.write("\n")
+def _distance(a: Atom, b: Atom) -> float:
+    """Euclidean distance between two atoms."""
+    dx = float(a["x"]) - float(b["x"])
+    dy = float(a["y"]) - float(b["y"])
+    dz = float(a["z"]) - float(b["z"])
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def convert_extxyz_to_mol2(input_file, output_file):
+def detect_bonds(
+    atoms: list[Atom],
+    tolerance: float = BOND_TOLERANCE,
+) -> list[Bond]:
+    """Detect bonds between atoms using covalent radii.
+
+    Two atoms are considered bonded when:
+        distance(A, B) < (cov_radius_A + cov_radius_B) * tolerance
+
+    Atoms whose element is not in ATOMIC_RADIUS are skipped (no bonds).
+    Returns a list of (i, j) pairs with i < j (0-based indices).
+    """
+    bonds: list[Bond] = []
+    n = len(atoms)
+    for i in range(n):
+        elem_i = str(atoms[i]["element"])
+        r_i = ATOMIC_RADIUS.get(elem_i)
+        if r_i is None:
+            continue
+        for j in range(i + 1, n):
+            elem_j = str(atoms[j]["element"])
+            r_j = ATOMIC_RADIUS.get(elem_j)
+            if r_j is None:
+                continue
+            max_dist = (r_i + r_j) * tolerance
+            if _distance(atoms[i], atoms[j]) < max_dist:
+                bonds.append((i, j))
+    return bonds
+
+
+def _get_sybyl_type(element: str, num_bonds: int) -> str:
+    """Return a SYBYL atom type string for the given element and bond count."""
+    return SYBYL_TYPES.get((element, num_bonds), element)
+
+
+# ---------------------------------------------------------------------------
+# MOL2 writing
+# ---------------------------------------------------------------------------
+
+def write_mol2(frames: list[Frame], output: TextIO) -> None:
+    """Write frames to a file handle in MOL2 format.
+
+    Each frame is written as a separate @<TRIPOS>MOLECULE block.
+    Bond information and SYBYL types are included when available.
+    """
+    for frame_idx, frame in enumerate(frames):
+        atoms: list[Atom] = frame["atoms"]  # type: ignore[assignment]
+        bonds: list[Bond] = frame["bonds"]  # type: ignore[assignment]
+
+        # Count bonds per atom for SYBYL type assignment
+        bond_count: dict[int, int] = {}
+        for a, b in bonds:
+            bond_count[a] = bond_count.get(a, 0) + 1
+            bond_count[b] = bond_count.get(b, 0) + 1
+
+        # @<TRIPOS>MOLECULE
+        output.write("@<TRIPOS>MOLECULE\n")
+        output.write(f"Frame_{frame_idx + 1}\n")
+        output.write(f"{len(atoms)} {len(bonds)} 0 0 0\n")
+        output.write("SMALL\n")
+        output.write("NO_CHARGES\n\n")
+
+        # @<TRIPOS>ATOM
+        output.write("@<TRIPOS>ATOM\n")
+        for atom_idx, atom in enumerate(atoms):
+            elem = str(atom["element"])
+            name = f"{elem}{atom_idx + 1}"
+            sybyl = _get_sybyl_type(elem, bond_count.get(atom_idx, 0))
+            output.write(
+                f"{atom_idx + 1:>7d} {name:<7s}"
+                f" {float(atom['x']):>10.4f}"
+                f" {float(atom['y']):>10.4f}"
+                f" {float(atom['z']):>10.4f}"
+                f" {sybyl:<6s} 1 LIG1 0.0000\n"
+            )
+
+        # @<TRIPOS>BOND
+        output.write("@<TRIPOS>BOND\n")
+        for bond_idx, (a, b) in enumerate(bonds):
+            output.write(f"{bond_idx + 1:>6d} {a + 1:>4d} {b + 1:>4d} 1\n")
+
+        output.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# High-level conversion
+# ---------------------------------------------------------------------------
+
+def convert_extxyz_to_mol2(
+    input_file: str,
+    output_file: str,
+    tolerance: float = BOND_TOLERANCE,
+) -> None:
+    """Read an extXYZ file, detect bonds, and write a MOL2 file."""
     with open(input_file, "r") as f:
         file_content = f.read()
 
     frames = parse_extxyz(file_content)
-    write_mol2(frames, output_file)
+
+    for frame in frames:
+        frame["bonds"] = detect_bonds(frame["atoms"], tolerance)  # type: ignore[arg-type]
+
+    with open(output_file, "w") as f:
+        write_mol2(frames, f)
 
 
-# Example usage
-input_file = "input.extxyz"  # Replace with your extxyz file path
-output_file = "output.mol2"  # Output MOL2 file path
-convert_extxyz_to_mol2(input_file, output_file)
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Convert extXYZ molecular files to MOL2 format.",
+    )
+    parser.add_argument("input", help="Path to the input extXYZ file")
+    parser.add_argument("output", help="Path for the output MOL2 file")
+    parser.add_argument(
+        "-t",
+        "--tolerance",
+        type=float,
+        default=BOND_TOLERANCE,
+        help=(
+            f"Bond detection tolerance factor (default: {BOND_TOLERANCE}). "
+            "A bond is detected when dist < (r_a + r_b) * tolerance."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        convert_extxyz_to_mol2(args.input, args.output, args.tolerance)
+    except FileNotFoundError:
+        print(f"Error: file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Converted {args.input} -> {args.output}")
+
+
+if __name__ == "__main__":
+    main()
